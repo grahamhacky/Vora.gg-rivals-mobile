@@ -694,18 +694,21 @@ local function scanTarget(fov)
     local center = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
     local bp, bpos, bd = nil, nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
-        if p == lp then continue end
-        if cfg.espTeamCheck and p.Team == lp.Team then continue end
-        local char = p.Character; if not char then continue end
-        local hum  = char:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then continue end
-        local bone = char:FindFirstChild(cfg.aimbotBone) or char:FindFirstChild("HumanoidRootPart")
-        if not bone then continue end
-        local pos = predictPos(bone)
-        local s, on = w2s(pos)
-        if not on then continue end
-        local d = (s - center).Magnitude
-        if d < bd and d < fov then bd = d; bp = p; bpos = pos end
+        if p ~= lp and not (cfg.espTeamCheck and p.Team == lp.Team) then
+            local char = p.Character
+            if char then
+                local hum  = char:FindFirstChildOfClass("Humanoid")
+                local bone = char:FindFirstChild(cfg.aimbotBone) or char:FindFirstChild("HumanoidRootPart")
+                if hum and hum.Health > 0 and bone then
+                    local pos = predictPos(bone)
+                    local s, on = w2s(pos)
+                    if on then
+                        local d = (s - center).Magnitude
+                        if d < bd and d < fov then bd = d; bp = p; bpos = pos end
+                    end
+                end
+            end
+        end
     end
     return bp, bpos
 end
@@ -740,17 +743,19 @@ local function bestTarget(fov)
             -- Switch only if a drastically closer target appeared (30% closer)
             local lockDist = (s - center).Magnitude
             for _, p in ipairs(Players:GetPlayers()) do
-                if p == lp or p == lockedTarget then continue end
-                if cfg.espTeamCheck and p.Team == lp.Team then continue end
-                local c2 = p.Character; if not c2 then continue end
-                local h2 = c2:FindFirstChildOfClass("Humanoid")
-                if not h2 or h2.Health <= 0 then continue end
-                local b2 = c2:FindFirstChild(cfg.aimbotBone) or c2:FindFirstChild("HumanoidRootPart")
-                if not b2 then continue end
-                local s2, on2 = w2s(predictPos(b2))
-                if on2 and (s2 - center).Magnitude < lockDist * 0.3 and (s2 - center).Magnitude < fov then
-                    lockedTarget = p
-                    return p, predictPos(b2)
+                if p ~= lp and p ~= lockedTarget and not (cfg.espTeamCheck and p.Team == lp.Team) then
+                    local c2 = p.Character
+                    if c2 then
+                        local h2 = c2:FindFirstChildOfClass("Humanoid")
+                        local b2 = c2:FindFirstChild(cfg.aimbotBone) or c2:FindFirstChild("HumanoidRootPart")
+                        if h2 and h2.Health > 0 and b2 then
+                            local s2, on2 = w2s(predictPos(b2))
+                            if on2 and (s2 - center).Magnitude < lockDist * 0.3 and (s2 - center).Magnitude < fov then
+                                lockedTarget = p
+                                return p, predictPos(b2)
+                            end
+                        end
+                    end
                 end
             end
 
@@ -868,8 +873,10 @@ RunService.RenderStepped:Connect(function(dt)
     end
 
     for _, p in ipairs(Players:GetPlayers()) do
-        if p == lp then continue end
-        if cfg.espTeamCheck and p.Team == lp.Team then removeESPObjs(p); continue end
+        if p ~= lp then
+        if cfg.espTeamCheck and p.Team == lp.Team then
+            removeESPObjs(p)
+        else
 
         local char = p.Character
         local hum  = char and char:FindFirstChildOfClass("Humanoid")
@@ -879,8 +886,7 @@ RunService.RenderStepped:Connect(function(dt)
         if not char or not hum or not root or not head or hum.Health <= 0 then
             local o = espObjs[p]
             if o then for _, d in pairs(o) do pcall(function() d.Visible = false end) end end
-            continue
-        end
+        else
 
         local o = getESPObjs(p)
 
@@ -893,8 +899,7 @@ RunService.RenderStepped:Connect(function(dt)
 
         if not topOn or not bottomOn then
             for _, d in pairs(o) do pcall(function() d.Visible = false end) end
-            continue
-        end
+        else
 
         local h  = math.abs(bottomScreen.Y - topScreen.Y)
         local w  = h * 0.55
@@ -963,6 +968,11 @@ RunService.RenderStepped:Connect(function(dt)
         else
             o.hpBg.Visible = false; o.hpBar.Visible = false
         end
+
+        end -- else (topOn)
+        end -- else (alive)
+        end -- else (teamCheck)
+        end -- if p ~= lp
     end
 end)
 
