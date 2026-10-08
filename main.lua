@@ -53,12 +53,13 @@ local cfg = {
     healthEnabled = true,
 
     -- Aimbot  (Right Mouse Button)
-    aimbotEnabled = false,
-    aimbotFOV     = 150,
-    aimbotSmooth  = 0.55,
-    aimbotBone    = "Head",
-    aimbotVelPred = true,
-    aimbotFOVvis  = true,
+    aimbotEnabled  = false,
+    aimbotFOV      = 150,
+    aimbotSmooth   = 12,    -- speed multiplier, dt-based (higher = snappier)
+    aimbotSnapDist = 8,     -- px: snap instantly when this close to target
+    aimbotBone     = "Head",
+    aimbotVelPred  = true,
+    aimbotFOVvis   = true,
 
     -- Auto Win
     autoWin       = false,
@@ -493,7 +494,11 @@ local function pageAimbot()
     mkToggle(content, "Aimbot", "Hold Right Mouse Button", cfg.aimbotEnabled, function(v) cfg.aimbotEnabled=v; updateFovCircle() end)
     mkInfo(content, "Activation key", "RMB (Hold)")
     mkSlider(content, "FOV Radius", 30, 500, cfg.aimbotFOV, function(v) return v.."px" end, function(v) cfg.aimbotFOV=v; updateFovCircle() end)
-    mkSlider(content, "Snap Speed", 1, 100, math.floor(cfg.aimbotSmooth*100), function(v) return v.."%" end, function(v) cfg.aimbotSmooth=v/100 end)
+    mkSlider(content, "Smoothness", 1, 30, cfg.aimbotSmooth, function(v)
+        if v <= 5 then return "Smooth"
+        elseif v <= 15 then return "Balanced ("..v..")"
+        else return "Snap ("..v..")" end
+    end, function(v) cfg.aimbotSmooth=v end)
     mkToggle(content, "FOV Circle", "Show FOV ring on screen", cfg.aimbotFOVvis, function(v) cfg.aimbotFOVvis=v; updateFovCircle() end)
     mkToggle(content, "Velocity Prediction", "Lead moving targets", cfg.aimbotVelPred, function(v) cfg.aimbotVelPred=v end)
 
@@ -671,44 +676,74 @@ local function w2s(pos)
     return Vector2.new(v.X, v.Y), on, v.Z
 end
 
-local lockedTarget = nil
+local lockedTarget    = nil
+local lockLostTime    = 0   -- tick() when target last went off screen
+local LOCK_GRACE      = 0.8 -- seconds to hold lock after target off-screen
+
+-- Predict position with velocity lead
+local function predictPos(bone)
+    local pos = bone.Position
+    if cfg.aimbotVelPred then
+        pcall(function() pos = pos + bone.AssemblyLinearVelocity * 0.075 end)
+    end
+    return pos
+end
 
 local function bestTarget(fov)
     local center = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
+    local now    = tick()
 
+    -- ── Maintain existing lock ──────────────────────────────────
     if lockedTarget then
         local char = lockedTarget.Character
         local hum  = char and char:FindFirstChildOfClass("Humanoid")
-        if hum and hum.Health > 0 then
-            local bone = char:FindFirstChild(cfg.aimbotBone) or char:FindFirstChild("HumanoidRootPart")
-            if bone then
-                local pos = bone.Position
-                pcall(function() if cfg.aimbotVelPred then pos = pos + bone.AssemblyLinearVelocity * 0.065 end end)
-                local s, on = w2s(pos)
-                if on then
-                    local lockDist = (s - center).Magnitude
-                    local bp2, bpos2, bd2 = nil, nil, math.huge
-                    for _, p in ipairs(Players:GetPlayers()) do
-                        if p == lp or p == lockedTarget then continue end
-                        if cfg.espTeamCheck and p.Team == lp.Team then continue end
-                        local c2 = p.Character; if not c2 then continue end
-                        local h2 = c2:FindFirstChildOfClass("Humanoid")
-                        if not h2 or h2.Health <= 0 then continue end
-                        local b2 = c2:FindFirstChild(cfg.aimbotBone) or c2:FindFirstChild("HumanoidRootPart"); if not b2 then continue end
-                        local p2 = b2.Position
-                        pcall(function() if cfg.aimbotVelPred then p2 = p2 + b2.AssemblyLinearVelocity * 0.065 end end)
-                        local s2, on2 = w2s(p2); if not on2 then continue end
-                        local d2 = (s2 - center).Magnitude
-                        if d2 < bd2 and d2 < fov then bd2=d2; bp2=p; bpos2=p2 end
-                    end
-                    if bp2 and bd2 < lockDist * 0.5 then lockedTarget = bp2; return bp2, bpos2 end
-                    return lockedTarget, pos
+
+        -- Target dead or left game → drop lock immediately
+        if not hum or hum.Health <= 0 then
+            lockedTarget = nil; lockLostTime = 0
+            goto fresh_scan
+        end
+
+        local bone = char:FindFirstChild(cfg.aimbotBone) or char:FindFirstChild("HumanoidRootPart")
+        if not bone then lockedTarget = nil; goto fresh_scan end
+
+        local pos = predictPos(bone)
+        local s, on = w2s(pos)
+
+        if on then
+            lockLostTime = 0  -- reset grace timer, target visible
+
+            -- Check if a drastically closer target appeared (within 30% of lock dist)
+            local lockDist = (s - center).Magnitude
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p == lp or p == lockedTarget then continue end
+                if cfg.espTeamCheck and p.Team == lp.Team then continue end
+                local c2 = p.Character; if not c2 then continue end
+                local h2 = c2:FindFirstChildOfClass("Humanoid")
+                if not h2 or h2.Health <= 0 then continue end
+                local b2 = c2:FindFirstChild(cfg.aimbotBone) or c2:FindFirstChild("HumanoidRootPart")
+                if not b2 then continue end
+                local s2, on2 = w2s(predictPos(b2))
+                if on2 and (s2 - center).Magnitude < lockDist * 0.3 and (s2 - center).Magnitude < fov then
+                    lockedTarget = p; return p, predictPos(b2)
                 end
             end
+
+            return lockedTarget, pos
+
+        else
+            -- Target off screen — hold for grace period
+            if lockLostTime == 0 then lockLostTime = now end
+            if now - lockLostTime < LOCK_GRACE then
+                return lockedTarget, pos  -- keep tracking even off-screen briefly
+            end
+            -- Grace expired → drop and re-scan
+            lockedTarget = nil; lockLostTime = 0
         end
-        lockedTarget = nil
     end
 
+    ::fresh_scan::
+    -- ── Pick closest target within FOV ─────────────────────────
     local bp, bpos, bd = nil, nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if p == lp then continue end
@@ -716,12 +751,13 @@ local function bestTarget(fov)
         local char = p.Character; if not char then continue end
         local hum  = char:FindFirstChildOfClass("Humanoid")
         if not hum or hum.Health <= 0 then continue end
-        local bone = char:FindFirstChild(cfg.aimbotBone) or char:FindFirstChild("HumanoidRootPart"); if not bone then continue end
-        local pos  = bone.Position
-        pcall(function() if cfg.aimbotVelPred then pos = pos + bone.AssemblyLinearVelocity * 0.065 end end)
-        local s, on = w2s(pos); if not on then continue end
+        local bone = char:FindFirstChild(cfg.aimbotBone) or char:FindFirstChild("HumanoidRootPart")
+        if not bone then continue end
+        local pos = predictPos(bone)
+        local s, on = w2s(pos)
+        if not on then continue end
         local d = (s - center).Magnitude
-        if d < bd and d < fov then bd=d; bp=p; bpos=pos end
+        if d < bd and d < fov then bd = d; bp = p; bpos = pos end
     end
     if bp then lockedTarget = bp end
     return bp, bpos
@@ -798,7 +834,25 @@ RunService.RenderStepped:Connect(function(dt)
         local _, pos = bestTarget(cfg.aimbotFOV)
         if pos then
             pcall(function()
-                cam.CFrame = cam.CFrame:Lerp(CFrame.new(cam.CFrame.Position, pos), cfg.aimbotSmooth)
+                local camPos  = cam.CFrame.Position
+                local current = cam.CFrame.LookVector
+                local desired = (pos - camPos).Unit
+
+                -- angle between current aim and target (radians)
+                local dot   = math.clamp(current:Dot(desired), -1, 1)
+                local angle = math.acos(dot)
+
+                -- dt-scaled alpha: speed * dt gives consistent feel at any fps
+                -- clamp to 1 so we never overshoot
+                local alpha = math.clamp(cfg.aimbotSmooth * dt, 0, 1)
+
+                -- snap instantly when very close to target
+                if angle < math.rad(cfg.aimbotSnapDist * 0.15) then
+                    alpha = 1
+                end
+
+                local newLook = current:Lerp(desired, alpha).Unit
+                cam.CFrame = CFrame.new(camPos, camPos + newLook)
             end)
         end
     end
