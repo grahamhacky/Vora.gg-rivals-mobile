@@ -689,61 +689,9 @@ local function predictPos(bone)
     return pos
 end
 
-local function bestTarget(fov)
+-- ── Scan all players for closest within FOV ────────────────────
+local function scanTarget(fov)
     local center = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
-    local now    = tick()
-
-    -- ── Maintain existing lock ──────────────────────────────────
-    if lockedTarget then
-        local char = lockedTarget.Character
-        local hum  = char and char:FindFirstChildOfClass("Humanoid")
-
-        -- Target dead or left game → drop lock immediately
-        if not hum or hum.Health <= 0 then
-            lockedTarget = nil; lockLostTime = 0
-            goto fresh_scan
-        end
-
-        local bone = char:FindFirstChild(cfg.aimbotBone) or char:FindFirstChild("HumanoidRootPart")
-        if not bone then lockedTarget = nil; goto fresh_scan end
-
-        local pos = predictPos(bone)
-        local s, on = w2s(pos)
-
-        if on then
-            lockLostTime = 0  -- reset grace timer, target visible
-
-            -- Check if a drastically closer target appeared (within 30% of lock dist)
-            local lockDist = (s - center).Magnitude
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p == lp or p == lockedTarget then continue end
-                if cfg.espTeamCheck and p.Team == lp.Team then continue end
-                local c2 = p.Character; if not c2 then continue end
-                local h2 = c2:FindFirstChildOfClass("Humanoid")
-                if not h2 or h2.Health <= 0 then continue end
-                local b2 = c2:FindFirstChild(cfg.aimbotBone) or c2:FindFirstChild("HumanoidRootPart")
-                if not b2 then continue end
-                local s2, on2 = w2s(predictPos(b2))
-                if on2 and (s2 - center).Magnitude < lockDist * 0.3 and (s2 - center).Magnitude < fov then
-                    lockedTarget = p; return p, predictPos(b2)
-                end
-            end
-
-            return lockedTarget, pos
-
-        else
-            -- Target off screen — hold for grace period
-            if lockLostTime == 0 then lockLostTime = now end
-            if now - lockLostTime < LOCK_GRACE then
-                return lockedTarget, pos  -- keep tracking even off-screen briefly
-            end
-            -- Grace expired → drop and re-scan
-            lockedTarget = nil; lockLostTime = 0
-        end
-    end
-
-    ::fresh_scan::
-    -- ── Pick closest target within FOV ─────────────────────────
     local bp, bpos, bd = nil, nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if p == lp then continue end
@@ -759,6 +707,68 @@ local function bestTarget(fov)
         local d = (s - center).Magnitude
         if d < bd and d < fov then bd = d; bp = p; bpos = pos end
     end
+    return bp, bpos
+end
+
+local function bestTarget(fov)
+    local center = Vector2.new(cam.ViewportSize.X * 0.5, cam.ViewportSize.Y * 0.5)
+    local now    = tick()
+
+    -- ── Maintain existing lock ──────────────────────────────────
+    if lockedTarget then
+        local char = lockedTarget.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+
+        -- Target dead or left game → drop lock immediately
+        if not hum or hum.Health <= 0 then
+            lockedTarget = nil; lockLostTime = 0
+            return scanTarget(fov)
+        end
+
+        local bone = char:FindFirstChild(cfg.aimbotBone) or char:FindFirstChild("HumanoidRootPart")
+        if not bone then
+            lockedTarget = nil; lockLostTime = 0
+            return scanTarget(fov)
+        end
+
+        local pos = predictPos(bone)
+        local s, on = w2s(pos)
+
+        if on then
+            lockLostTime = 0  -- reset grace timer, target is visible
+
+            -- Switch only if a drastically closer target appeared (30% closer)
+            local lockDist = (s - center).Magnitude
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p == lp or p == lockedTarget then continue end
+                if cfg.espTeamCheck and p.Team == lp.Team then continue end
+                local c2 = p.Character; if not c2 then continue end
+                local h2 = c2:FindFirstChildOfClass("Humanoid")
+                if not h2 or h2.Health <= 0 then continue end
+                local b2 = c2:FindFirstChild(cfg.aimbotBone) or c2:FindFirstChild("HumanoidRootPart")
+                if not b2 then continue end
+                local s2, on2 = w2s(predictPos(b2))
+                if on2 and (s2 - center).Magnitude < lockDist * 0.3 and (s2 - center).Magnitude < fov then
+                    lockedTarget = p
+                    return p, predictPos(b2)
+                end
+            end
+
+            return lockedTarget, pos
+        else
+            -- Target off screen — hold for grace period
+            if lockLostTime == 0 then lockLostTime = now end
+            if now - lockLostTime < LOCK_GRACE then
+                return lockedTarget, pos  -- keep tracking briefly
+            end
+            -- Grace expired → drop and re-scan
+            lockedTarget = nil; lockLostTime = 0
+            return scanTarget(fov)
+        end
+    end
+
+    -- No lock — fresh scan
+    local bp, bpos = scanTarget(fov)
     if bp then lockedTarget = bp end
     return bp, bpos
 end
